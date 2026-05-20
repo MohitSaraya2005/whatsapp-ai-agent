@@ -114,7 +114,7 @@ function adminAuth(req, res, next) {
   res.status(401).send("Unauthorized Access Credentials.");
 }
 
-app.get('/admin/menu', adminAuth, async (req, res) => { ... });
+
 
 // 1. Appends an item to the user's active database cart
 async function handleAddToCart(whatsappNumber, itemText) {
