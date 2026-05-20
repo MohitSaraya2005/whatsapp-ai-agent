@@ -136,8 +136,13 @@ async function handleAddToCart(whatsappNumber, itemText) {
 
 // 2. Formats the user's current items into a crisp text manifest
 async function getCartSummary(whatsappNumber) {
+  // Look ONLY for an open, active cart configuration
   const cart = await Order.findOne({ whatsappNumber, status: "CART" });
-  if (!cart || cart.items.length === 0) return "Your current cart is empty.";
+
+  // CRITICAL FIX: Return a highly explicit string that Gemini cannot misunderstand
+  if (!cart || cart.items.length === 0) {
+    return "DATABASE_CART_STATUS: EMPTY_NO_ACTIVE_ITEMS";
+  }
 
   const itemLines = cart.items
     .map(
@@ -189,7 +194,7 @@ app.post("/webhook", async (req, res) => {
         let interceptionReply = "";
         const lowercaseMsg = messageText.toLowerCase();
         // ==========================================
-        // 1. STATE FLOW: CONFIRMING DELIVERY ADDRESS
+        // STATE FLOW 1: CONFIRMING DELIVERY ADDRESS
         // ==========================================
         if (session.currentState === "CONFIRMING") {
           let cart = await Order.findOne({
@@ -201,15 +206,16 @@ app.post("/webhook", async (req, res) => {
             cart.status = "PLACED";
             await cart.save();
 
+            // WIPE HISTORY CLEAN: Prevents Gemini from reading old "Add Item" messages
             session.currentState = "BROWSE";
+            session.history = []; // Clear the context array for a fresh start!
             await session.save();
 
             interceptionReply = `🎉 *Order Confirmed!* Your order has been fired to our kitchen counter.\n\n🏠 *Delivery Address:* ${messageText}\n💳 *Total Bill:* ₹${cart.totalAmount}\n\nThank you for ordering from The Digital Bistro! 🧑‍🍳`;
             await sendWhatsAppMessage(from, interceptionReply);
-            return; // Stop execution here
+            return;
           }
         }
-
         // ==========================================
         // 2. INTERCEPT INTENT: CHECKOUT / FINAL BILL (MOVE THIS UP)
         // ==========================================
@@ -304,8 +310,14 @@ app.post("/webhook", async (req, res) => {
         let activeCartContext = await getCartSummary(from);
 
         // System instructions detailing persona and operational checkout formatting
-        const baseRestaurantInstruction =
-          "You are 'ChefBot', the virtual host and ordering assistant for 'The Digital Bistro'. Your tone is warm, polite, and mouth-watering. Keep answers clean, conversational, and optimize descriptions for WhatsApp using simple *bold* text highlights for items and prices. Do not mention database IDs.";
+        const restaurantInstruction = `You are 'ChefBot', the virtual host for 'The Digital Bistro'. 
+
+        CRITICAL CART CONTEXT: 
+        ${activeCartContext}
+
+        Operational Rules:
+        1. If the context says 'DATABASE_CART_STATUS: EMPTY_NO_ACTIVE_ITEMS', it means the user currently has 0 items in their cart (their past order was already placed successfully, or they haven't added anything yet). If they ask what is in their cart or if it's empty, explicitly confirm it is completely empty. Ignore any older items mentioned earlier in the conversation history.
+        2. If they want to order a dish, politely instruct them to type exactly: "Add [Item Name]".`;
 
         const dynamicInstruction =
           `${baseRestaurantInstruction}\n\n` +
