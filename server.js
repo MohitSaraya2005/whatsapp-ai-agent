@@ -80,8 +80,7 @@ async function searchMenu(userQuery) {
   }
 }
 
-import { Order } from './Order.js';
-import { MenuItem } from './MenuItem.js';
+
 
 // 1. Appends an item to the user's active database cart
 async function handleAddToCart(whatsappNumber, itemText) {
