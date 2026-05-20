@@ -1,0 +1,21 @@
+# OS-specific files
+.DS_Store
+Thumbs.db
+*.swp
+
+# Environment variables (Sensitive!)
+.env
+.env.local
+
+# Common dependency directories
+node_modules/
+vendor/
+venv/
+.venv/
+__pycache__/
+
+# Build outputs and logs
+dist/
+build/
+*.log
+npm-debug.log*
