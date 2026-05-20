@@ -5,6 +5,12 @@ import { GoogleGenAI } from "@google/genai";
 import { connectDB, ChatSession } from "./db.js";
 import { MenuItem } from "./MenuItem.js";
 import { Order } from "./Order.js";
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 connectDB().catch((err) => console.error("Database connection failure:", err));
 
@@ -17,6 +23,10 @@ const PORT = process.env.PORT || 3000;
 const MO_VERIFY_TOKEN = process.env.VERIFY_TOKEN;
 const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;
 const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID;
+
+app.set('view engine', 'ejs');
+app.set('views', path.join(__dirname, 'views'));
+app.use(express.urlencoded({ extended: true })); // Allows parsing forms html text data
 
 // Initialize the Gemini AI Client
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
@@ -94,6 +104,18 @@ async function searchMenu(userQuery) {
   }
 }
 
+// Simple password protection middleware
+function adminAuth(req, res, next) {
+  // Pass basic checks or integrate an authentication cookie variable
+  // For a basic MVP, even simple query parameter tokens function easily: e.g. /admin/menu?pin=1234
+  if (req.query.pin === process.env.ADMIN_PIN) {
+    return next();
+  }
+  res.status(401).send("Unauthorized Access Credentials.");
+}
+
+app.get('/admin/menu', adminAuth, async (req, res) => { ... });
+
 // 1. Appends an item to the user's active database cart
 async function handleAddToCart(whatsappNumber, itemText) {
   // Simple extraction regex looking for "qty x name" or just item names
@@ -165,6 +187,65 @@ app.get("/webhook", (req, res) => {
   return res.sendStatus(403);
 });
 
+
+// A. View all dishes and the creation interface
+app.get('/admin/menu',adminAuth, async (req, res) => {
+  try {
+    const items = await MenuItem.find().sort({ category: 1 });
+    res.render('menu-manager', { items });
+  } catch (err) {
+    res.status(500).send("Error loading administration controls.");
+  }
+});
+
+// B. Route to append a completely new item
+app.post('/admin/menu/add',adminAuth, async (req, res) => {
+  try {
+    const { name, description, price, category, foodType, spicyLevel, prepTimeMinutes, keywords } = req.body;
+    
+    // Process comma separated text keywords into clean array objects
+    const keywordArray = keywords ? keywords.split(',').map(k => k.trim()) : [];
+
+    await MenuItem.create({
+      name,
+      description,
+      price: Number(price),
+      category,
+      foodType,
+      spicyLevel,
+      prepTimeMinutes: Number(prepTimeMinutes),
+      keywords: keywordArray,
+      isAvailable: true
+    });
+
+    res.redirect('/admin/menu'); // Refresh page to see new entry
+  } catch (err) {
+    res.status(400).send(`Failed to save menu entry: ${err.message}`);
+  }
+});
+
+// C. Route to remove an item instantly
+app.post('/admin/menu/delete/:id',adminAuth, async (req, res) => {
+  try {
+    await MenuItem.findByIdAndDelete(req.params.id);
+    res.redirect('/admin/menu');
+  } catch (err) {
+    res.status(500).send("Deletion failure.");
+  }
+});
+
+// D. Quick switch to toggle availability (In Stock / Out of Stock)
+app.post('/admin/menu/toggle/:id',adminAuth, async (req, res) => {
+  try {
+    const item = await MenuItem.findById(req.params.id);
+    item.isAvailable = !item.isAvailable;
+    await item.save();
+    res.redirect('/admin/menu');
+  } catch (err) {
+    res.status(500).send("Status toggle failure.");
+  }
+});
+
 // 2. Handle Incoming Messages (POST)
 app.post("/webhook", async (req, res) => {
   // Always acknowledge Meta immediately to prevent retry loops
@@ -181,6 +262,7 @@ app.post("/webhook", async (req, res) => {
 
     if (messageText) {
       try {
+        const dynamicTwoHoursLater = new Date(Date.now() + 2 * 60 * 60 * 1000);
         // 1. Fetch or initialize the user's chat session with a default 'BROWSE' state
         let session = await ChatSession.findOne({ whatsappNumber: from });
         if (!session) {
@@ -189,6 +271,10 @@ app.post("/webhook", async (req, res) => {
             currentState: "BROWSE",
             history: [],
           });
+
+          session.expiresAt = dynamicTwoHoursLater;
+          session.updatedAt = Date.now();
+          await session.save();
         }
 
         let interceptionReply = "";
@@ -204,11 +290,14 @@ app.post("/webhook", async (req, res) => {
           if (cart) {
             cart.deliveryAddress = messageText;
             cart.status = "PLACED";
+
+            cart.expiresAt = undefined;
             await cart.save();
 
             // WIPE HISTORY CLEAN: Prevents Gemini from reading old "Add Item" messages
             session.currentState = "BROWSE";
             session.history = []; // Clear the context array for a fresh start!
+            session.expiresAt = dynamicTwoHoursLater; 
             await session.save();
 
             interceptionReply = `🎉 *Order Confirmed!* Your order has been fired to our kitchen counter.\n\n🏠 *Delivery Address:* ${messageText}\n💳 *Total Bill:* ₹${cart.totalAmount}\n\nThank you for ordering from The Digital Bistro! 🧑‍🍳`;

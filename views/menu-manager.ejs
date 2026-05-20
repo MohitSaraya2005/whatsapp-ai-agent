@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ChefBot Menu Management Dashboard</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/water.css@2/out/water.css">
+    <style>
+        .status-available { color: #28a745; }
+        .status-unavailable { color: #dc3545; }
+    </style>
+</head>
+<body>
+    <h1>🧑‍🍳 The Digital Bistro - Menu Management Console</h1>
+    <hr>
+
+    <h2>➕ Add New Menu Item</h2>
+    <form action="/admin/menu/add" method="POST">
+        <label>Dish Name:</label>
+        <input type="text" name="name" required placeholder="e.g. Garlic Naan">
+
+        <label>Description:</label>
+        <textarea name="description" required placeholder="Describe the item..."></textarea>
+
+        <label>Price (₹):</label>
+        <input type="number" name="price" required min="1">
+
+        <label>Category:</label>
+        <select name="category">
+            <option value="Starters">Starters</option>
+            <option value="Main Course">Main Course</option>
+            <option value="Desserts">Desserts</option>
+            <option value="Beverages">Beverages</option>
+        </select>
+
+        <label>Food Type:</label>
+        <select name="foodType">
+            <option value="Veg">🟢 Veg</option>
+            <option value="Non-Veg">🔴 Non-Veg</option>
+        </select>
+
+        <label>Spiciness Level:</label>
+        <select name="spicyLevel">
+            <option value="Mild">Mild</option>
+            <option value="Medium" selected>Medium</option>
+            <option value="Spicy">Spicy</option>
+        </select>
+
+        <label>Preparation Time (Minutes):</label>
+        <input type="number" name="prepTimeMinutes" value="15">
+
+        <label>Keywords (Comma separated for search matching):</label>
+        <input type="text" name="keywords" placeholder="bread, indian, butter">
+
+        <button type="submit" style="background-color: #28a745; color: white;">Save Item to Menu</button>
+    </form>
+
+    <hr>
+
+    <h2>📋 Current Menu List</h2>
+    <table>
+        <thead>
+            <tr>
+                <th>Item Details</th>
+                <th>Price</th>
+                <th>Status</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            <% items.forEach(item => { %>
+                <tr>
+                    <td>
+                        <strong><%= item.name %></strong> <%= item.foodType === 'Veg' ? '🟢' : '🔴' %><br>
+                        <small style="color: gray;"><%= item.category %> | <%= item.description %></small>
+                    </td>
+                    <td>₹<%= item.price %></td>
+                    <td>
+                        <span class="<%= item.isAvailable ? 'status-available' : 'status-unavailable' %>">
+                            <%= item.isAvailable ? 'In Stock' : 'Out of Stock' %>
+                        </span>
+                    </td>
+                    <td>
+                        <div style="display: flex; gap: 5px;">
+                            <form action="/admin/menu/toggle/<%= item._id %>" method="POST" style="margin:0;">
+                                <button type="submit"><%= item.isAvailable ? 'Mark Sold Out' : 'Mark Available' %></button>
+                            </form>
+                            <form action="/admin/menu/delete/<%= item._id %>" method="POST" style="margin:0;" onsubmit="return confirm('Delete this dish permanently?');">
+                                <button type="submit" style="background-color: #dc3545; color: white;">Delete</button>
+                            </form>
+                        </div>
+                    </td>
+                </tr>
+            <% }) %>
+        </tbody>
+    </table>
+</body>
+</html>

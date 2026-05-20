@@ -16,7 +16,12 @@ const OrderSchema = new mongoose.Schema({
     default: 'CART' 
   },
   deliveryAddress: { type: String, default: "" },
-  createdAt: { type: Date, default: Date.now }
+  createdAt: { type: Date, default: Date.now },
+  expiresAt: {
+    type: Date,
+    default: () => new Date(Date.now() + 2 * 60 * 60 * 1000), // Expires in 2 hours
+    index: { expires: 0 }
+  }
 });
 
 export const Order = mongoose.model('Order', OrderSchema);

@@ -9,7 +9,13 @@ const ChatSessionSchema = new mongoose.Schema({
       parts: [{ text: { type: String, required: true } }]
     }
   ],
-  updatedAt: { type: Date, default: Date.now }
+  updatedAt: { type: Date, default: Date.now },
+
+  expiresAt: { 
+    type: Date, 
+    default: () => new Date(Date.now() + 2 * 60 * 60 * 1000), // 2 hours from creation
+    index: { expires: 0 } // Tell MongoDB to delete this document the exact moment 'expiresAt' is reached
+  }
 });
 
 export const ChatSession = mongoose.model('ChatSession', ChatSessionSchema);
