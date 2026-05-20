@@ -1,6 +1,7 @@
 import express from 'express';
 import axios from 'axios';
 import dotenv from 'dotenv';
+import { GoogleGenAI } from '@google/genai';
 
 dotenv.config();
 
@@ -12,6 +13,9 @@ const MO_VERIFY_TOKEN = process.env.VERIFY_TOKEN;
 const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;
 const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID;
 
+// Initialize the Gemini AI Client
+const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+
 // 1. Webhook Verification (GET)
 app.get('/webhook', (req, res) => {
   const mode = req.query['hub.mode'];
@@ -19,38 +23,53 @@ app.get('/webhook', (req, res) => {
   const challenge = req.query['hub.challenge'];
 
   if (mode === 'subscribe' && token === MO_VERIFY_TOKEN) {
-    console.log('Webhook verified successfully!');
+    process.stdout.write('Webhook verified successfully!\n');
     return res.status(200).send(challenge);
   }
-  
   return res.sendStatus(403);
 });
 
 // 2. Handle Incoming Messages (POST)
 app.post('/webhook', async (req, res) => {
-  // Acknowledge receipt to Meta immediately to prevent retry loops
+  // Acknowledge receipt to Meta instantly
   res.sendStatus(200);
 
   const body = req.body;
 
-  // Check if it's a valid WhatsApp message event
   if (body.object === 'whatsapp_business_account' && body.entry?.[0]?.changes?.[0]?.value?.messages?.[0]) {
     const messageObj = body.entry[0].changes[0].value.messages[0];
-    const from = messageObj.from; // Customer's phone number
-    const messageText = messageObj.text?.body; // The actual message text
+    const from = messageObj.from; 
+    const messageText = messageObj.text?.body; 
 
     if (messageText) {
-      console.log(`Received message from ${from}: ${messageText}`);
+      process.stdout.write(`\n[INCOMING] Message from ${from}: ${messageText}\n`);
       
-      // TODO: Pass 'messageText' to your AI layer (Gemini/Groq) to get a response string
-      const aiReply = `You said: "${messageText}". (AI logic goes here!)`;
+      try {
+        // Generate a response using Gemini
+        const response = await ai.models.generateContent({
+          model: 'gemini-2.5-flash',
+          contents: messageText,
+          config: {
+            // Give your agent an identity/role
+            systemInstruction: "You are a helpful, concise AI assistant communicating over WhatsApp. Keep responses brief, conversational, and avoid heavy markdown formatting like bold headers, since WhatsApp formatting is limited.",
+          }
+        });
 
-      await sendWhatsAppMessage(from, aiReply);
+        const aiReply = response.text || "Sorry, I couldn't process that request.";
+        process.stdout.write(`[AI RESPONSE] Generated: ${aiReply}\n`);
+
+        // Send the AI response back to WhatsApp
+        await sendWhatsAppMessage(from, aiReply);
+        process.stdout.write(`[OUTGOING] Sent reply to ${from}\n`);
+
+      } catch (err) {
+        process.stderr.write(`[ERROR] AI or WhatsApp delivery failed: ${err.message}\n`);
+      }
     }
   }
 });
 
-// Helper Function to send messages back via WhatsApp API
+// Helper Function to send messages via WhatsApp API
 async function sendWhatsAppMessage(to, text) {
   try {
     await axios.post(
@@ -68,9 +87,8 @@ async function sendWhatsAppMessage(to, text) {
         }
       }
     );
-    console.log(`Message sent to ${to}`);
   } catch (error) {
-    console.error('Error sending WhatsApp message:', error.response?.data || error.message);
+    throw new Error(JSON.stringify(error.response?.data || error.message));
   }
 }
 
