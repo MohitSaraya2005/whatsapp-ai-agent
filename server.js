@@ -30,9 +30,9 @@ app.get('/webhook', (req, res) => {
 });
 
 // 2. Handle Incoming Messages (POST)
+// 2. Handle Incoming Messages (POST) with Auto-Retry & Fallback
 app.post('/webhook', async (req, res) => {
-  // Acknowledge receipt to Meta instantly
-  res.sendStatus(200);
+  res.sendStatus(200); // Always acknowledge Meta immediately
 
   const body = req.body;
 
@@ -44,31 +44,60 @@ app.post('/webhook', async (req, res) => {
     if (messageText) {
       process.stdout.write(`\n[INCOMING] Message from ${from}: ${messageText}\n`);
       
-      try {
-        // Generate a response using Gemini
-        const response = await ai.models.generateContent({
-          model: 'gemini-2.5-flash',
-          contents: messageText,
-          config: {
-            // Give your agent an identity/role
-            systemInstruction: "You are a helpful, concise AI assistant communicating over WhatsApp. Keep responses brief, conversational, and avoid heavy markdown formatting like bold headers, since WhatsApp formatting is limited.",
+      let aiReply = "";
+      // List of models to try if the primary one is overloaded (503)
+      const modelsToTry = ['gemini-2.5-flash', 'gemini-2.5-flash-lite', 'gemini-1.5-flash'];
+
+      // Attempt to get a response using model fallback and retry loops
+      for (const modelName of modelsToTry) {
+        let attempts = 0;
+        const maxAttempts = 3;
+
+        while (attempts < maxAttempts) {
+          try {
+            process.stdout.write(`[AI TRY] Attempting generation with ${modelName} (Try ${attempts + 1})...\n`);
+            
+            const response = await ai.models.generateContent({
+              model: modelName,
+              contents: messageText,
+              config: {
+                systemInstruction: "You are a helpful, concise AI assistant communicating over WhatsApp. Keep responses brief and conversational.",
+              }
+            });
+
+            if (response.text) {
+              aiReply = response.text;
+              break; // Success! Break out of the retry loop
+            }
+          } catch (err) {
+            attempts++;
+            process.stderr.write(`[WARN] ${modelName} failed with: ${err.message}. \n`);
+            
+            if (attempts < maxAttempts) {
+              // Wait 2 seconds before retrying this specific model
+              await new Promise(resolve => setTimeout(resolve, 2000)); 
+            }
           }
-        });
+        }
 
-        const aiReply = response.text || "Sorry, I couldn't process that request.";
-        process.stdout.write(`[AI RESPONSE] Generated: ${aiReply}\n`);
+        if (aiReply) break; // If a model succeeded, don't try the backup models
+      }
 
-        // Send the AI response back to WhatsApp
+      // If all models failed completely after all retries
+      if (!aiReply) {
+        aiReply = "🤖 Sorry, my brain is a bit overloaded with requests right now! Please try messaging me again in a minute.";
+      }
+
+      try {
+        // Send whatever response we secured back to WhatsApp
         await sendWhatsAppMessage(from, aiReply);
         process.stdout.write(`[OUTGOING] Sent reply to ${from}\n`);
-
-      } catch (err) {
-        process.stderr.write(`[ERROR] AI or WhatsApp delivery failed: ${err.message}\n`);
+      } catch (deliveryErr) {
+        process.stderr.write(`[ERROR] WhatsApp delivery failed: ${deliveryErr.message}\n`);
       }
     }
   }
 });
-
 // Helper Function to send messages via WhatsApp API
 async function sendWhatsAppMessage(to, text) {
   try {
