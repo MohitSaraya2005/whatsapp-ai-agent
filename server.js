@@ -310,7 +310,7 @@ app.post("/webhook", async (req, res) => {
         let activeCartContext = await getCartSummary(from);
 
         // System instructions detailing persona and operational checkout formatting
-        const restaurantInstruction = `You are 'ChefBot', the virtual host for 'The Digital Bistro'. 
+        const baseRestaurantInstruction = `You are 'ChefBot', the virtual host for 'The Digital Bistro'. 
 
         CRITICAL CART CONTEXT: 
         ${activeCartContext}
