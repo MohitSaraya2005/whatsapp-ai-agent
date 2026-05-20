@@ -2,12 +2,11 @@ import mongoose from 'mongoose';
 
 const ChatSessionSchema = new mongoose.Schema({
   whatsappNumber: { type: String, required: true, unique: true },
+  currentState: { type: String, enum: ['BROWSE', 'ORDERING', 'CONFIRMING'], default: 'BROWSE' },
   history: [
     {
       role: { type: String, enum: ['user', 'model'], required: true },
-      parts: [
-        { text: { type: String, required: true } }
-      ]
+      parts: [{ text: { type: String, required: true } }]
     }
   ],
   updatedAt: { type: Date, default: Date.now }

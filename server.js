@@ -4,6 +4,7 @@ import dotenv from 'dotenv';
 import { GoogleGenAI } from '@google/genai';
 import { connectDB, ChatSession } from './db.js';
 import { MenuItem } from './MenuItem.js';
+import { Order } from './Order.js';
 
 
 connectDB().catch(err => console.error("Database connection failure:", err));
@@ -79,6 +80,46 @@ async function searchMenu(userQuery) {
   }
 }
 
+import { Order } from './Order.js';
+import { MenuItem } from './MenuItem.js';
+
+// 1. Appends an item to the user's active database cart
+async function handleAddToCart(whatsappNumber, itemText) {
+  // Simple extraction regex looking for "qty x name" or just item names
+  const menuItems = await MenuItem.find({ isAvailable: true });
+  let matchedItem = menuItems.find(item => itemText.toLowerCase().includes(item.name.toLowerCase()));
+
+  if (!matchedItem) return "I couldn't find that item on our active menu card. Please check the spelling.";
+
+  let cart = await Order.findOne({ whatsappNumber, status: 'CART' });
+  if (!cart) {
+    cart = new Order({ whatsappNumber, items: [], totalAmount: 0 });
+  }
+
+  // Check if item is already in the cart to increment quantity
+  const existingItemIndex = cart.items.findIndex(i => i.itemName === matchedItem.name);
+  if (existingItemIndex > -1) {
+    cart.items[existingItemIndex].quantity += 1;
+  } else {
+    cart.items.push({ itemName: matchedItem.name, quantity: 1, pricePerItem: matchedItem.price });
+  }
+
+  // Recalculate total balance
+  cart.totalAmount = cart.items.reduce((sum, item) => sum + (item.pricePerItem * item.quantity), 0);
+  await cart.save();
+
+  return `Added *${matchedItem.name}* (₹${matchedItem.price}) to your cart. Total: ₹${cart.totalAmount}.`;
+}
+
+// 2. Formats the user's current items into a crisp text manifest
+async function getCartSummary(whatsappNumber) {
+  const cart = await Order.findOne({ whatsappNumber, status: 'CART' });
+  if (!cart || cart.items.length === 0) return "Your current cart is empty.";
+
+  const itemLines = cart.items.map(i => `• ${i.itemName} x${i.quantity} - ₹${i.pricePerItem * i.quantity}`).join('\n');
+  return `Your Cart:\n${itemLines}\n\n*Total Amount: ₹${cart.totalAmount}*`;
+}
+
 // 1. Webhook Verification (GET)
 app.get('/webhook', (req, res) => {
   const mode = req.query['hub.mode'];
@@ -94,39 +135,112 @@ app.get('/webhook', (req, res) => {
 
 // 2. Handle Incoming Messages (POST)
 app.post('/webhook', async (req, res) => {
+  // Always acknowledge Meta immediately to prevent retry loops
   res.sendStatus(200);
   const body = req.body;
 
   if (body.object === 'whatsapp_business_account' && body.entry?.[0]?.changes?.[0]?.value?.messages?.[0]) {
     const messageObj = body.entry[0].changes[0].value.messages[0];
     const from = messageObj.from; 
-    const messageText = messageObj.text?.body; 
+    const messageText = messageObj.text?.body?.trim(); 
 
     if (messageText) {
       try {
+        // 1. Fetch or initialize the user's chat session with a default 'BROWSE' state
         let session = await ChatSession.findOne({ whatsappNumber: from });
         if (!session) {
-          session = new ChatSession({ whatsappNumber: from, history: [] });
+          session = new ChatSession({ whatsappNumber: from, currentState: 'BROWSE', history: [] });
         }
 
+        let interceptionReply = "";
+        const lowercaseMsg = messageText.toLowerCase();
+
+        // ==========================================
+        // STATE FLOW 1: CONFIRMING DELIVERY ADDRESS
+        // ==========================================
+        if (session.currentState === 'CONFIRMING') {
+          let cart = await Order.findOne({ whatsappNumber: from, status: 'CART' });
+          if (cart) {
+            cart.deliveryAddress = messageText;
+            cart.status = 'PLACED';
+            await cart.save();
+            
+            // Return user to browsing state
+            session.currentState = 'BROWSE';
+            await session.save();
+            
+            interceptionReply = `🎉 *Order Confirmed!* Your order has been fired to our kitchen counter.\n\n🏠 *Delivery Address:* ${messageText}\n💳 *Total Bill:* ₹${cart.totalAmount}\n\nThank you for ordering from The Digital Bistro! 🧑‍🍳`;
+            await sendWhatsAppMessage(from, interceptionReply);
+            return;
+          }
+        }
+
+        // ==========================================
+        // STATE FLOW 2: INTERCEPT 'ADD TO CART' INTENT
+        // ==========================================
+        if (lowercaseMsg.startsWith('add ') || lowercaseMsg.includes('order a') || lowercaseMsg.includes('want to eat')) {
+          session.currentState = 'ORDERING';
+          
+          // Run the custom database calculation layer
+          interceptionReply = await handleAddToCart(from, messageText);
+          
+          // Keep AI logs aligned manually for intercepted steps
+          session.history.push({ role: 'user', parts: [{ text: messageText }] });
+          session.history.push({ role: 'model', parts: [{ text: interceptionReply }] });
+          if (session.history.length > 14) session.history = session.history.slice(-14);
+          
+          session.updatedAt = Date.now();
+          await session.save();
+          
+          await sendWhatsAppMessage(from, interceptionReply);
+          return;
+        }
+
+        // ==========================================
+        // STATE FLOW 3: INTERCEPT CHECKOUT INTENT
+        // ==========================================
+        if (lowercaseMsg.includes('checkout') || lowercaseMsg.includes('place order') || lowercaseMsg.includes('final bill')) {
+          const summary = await getCartSummary(from);
+          
+          if (summary.includes('empty')) {
+            await sendWhatsAppMessage(from, "🛒 Your cart is currently empty! Type *'menu'* to explore our dishes first.");
+            return;
+          }
+          
+          // Elevate state machine to lock down address entry next
+          session.currentState = 'CONFIRMING';
+          await session.save();
+          
+          interceptionReply = `${summary}\n\nTo finalize your order, please reply directly back with your *complete home delivery address*.`;
+          await sendWhatsAppMessage(from, interceptionReply);
+          return;
+        }
+
+        // ==========================================
+        // STATE FLOW 4: STANDARD AI MENU DISCOVERY
+        // ==========================================
         session.history.push({ role: 'user', parts: [{ text: messageText }] });
 
-        // Restaurant Intent Detection
+        // Restaurant Intent Search Detection
         let menuContext = "";
         const restaurantKeywords = ['menu', 'food', 'order', 'dinner', 'lunch', 'eat', 'hungry', 'price', 'rate', 'veg', 'starters', 'main'];
-        const hasRestaurantIntent = restaurantKeywords.some(kw => messageText.toLowerCase().includes(kw));
+        const hasRestaurantIntent = restaurantKeywords.some(kw => lowercaseMsg.includes(kw));
 
         if (hasRestaurantIntent) {
           process.stdout.write(`[RESTAURANT] Querying menu items for: "${messageText}"...\n`);
           menuContext = await searchMenu(messageText);
         }
 
-        // Restaurant System Personality Rules
+        // Get the active cart summary text stream to pass as direct context to Gemini
+        let activeCartContext = await getCartSummary(from);
+
+        // System instructions detailing persona and operational checkout formatting
         const baseRestaurantInstruction = "You are 'ChefBot', the virtual host and ordering assistant for 'The Digital Bistro'. Your tone is warm, polite, and mouth-watering. Keep answers clean, conversational, and optimize descriptions for WhatsApp using simple *bold* text highlights for items and prices. Do not mention database IDs.";
         
-        const dynamicInstruction = menuContext 
-          ? `${baseRestaurantInstruction}\n\nLIVE KITCHEN MENU DATA:\nUse ONLY this data to state what is available and its price. Do not guess recipes or prices:\n${menuContext}\n\nCRITICAL INSTRUCTION: If an item state says 'Status: OUT OF STOCK', kindly inform the guest that the dish is sold out for today and suggest an alternative from the available items list.`
-          : baseRestaurantInstruction;
+        const dynamicInstruction = `${baseRestaurantInstruction}\n\n` +
+          `LIVE KITCHEN MENU DATA:\n${menuContext || "No specific items loaded."}\n\n` +
+          `USER'S ACTIVE CART MANIFEST:\n${activeCartContext}\n\n` +
+          `CRITICAL TRANSACTION RULE: If the guest expresses an explicit intent to order an item, politely instruct them to type exactly: "Add [Item Name]" so the database processing layer can record it successfully.`;
 
         let aiReply = "";
         const modelsToTry = ['gemini-2.5-flash', 'gemini-2.5-flash-lite', 'gemini-1.5-flash'];
