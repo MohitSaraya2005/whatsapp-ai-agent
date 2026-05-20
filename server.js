@@ -2,6 +2,9 @@ import express from 'express';
 import axios from 'axios';
 import dotenv from 'dotenv';
 import { GoogleGenAI } from '@google/genai';
+import { connectDB, ChatSession } from './db.js';
+
+connectDB().catch(err => console.error("Database connection failure:", err));
 
 dotenv.config();
 
@@ -30,10 +33,8 @@ app.get('/webhook', (req, res) => {
 });
 
 // 2. Handle Incoming Messages (POST)
-// 2. Handle Incoming Messages (POST) with Auto-Retry & Fallback
 app.post('/webhook', async (req, res) => {
-  res.sendStatus(200); // Always acknowledge Meta immediately
-
+  res.sendStatus(200);
   const body = req.body;
 
   if (body.object === 'whatsapp_business_account' && body.entry?.[0]?.changes?.[0]?.value?.messages?.[0]) {
@@ -42,58 +43,58 @@ app.post('/webhook', async (req, res) => {
     const messageText = messageObj.text?.body; 
 
     if (messageText) {
-      process.stdout.write(`\n[INCOMING] Message from ${from}: ${messageText}\n`);
-      
-      let aiReply = "";
-      // List of models to try if the primary one is overloaded (503)
-      const modelsToTry = ['gemini-2.5-flash', 'gemini-2.5-flash-lite', 'gemini-1.5-flash'];
+      try {
+        // 1. Fetch existing session log or build a new one inline
+        let session = await ChatSession.findOne({ whatsappNumber: from });
+        if (!session) {
+          session = new ChatSession({ whatsappNumber: from, history: [] });
+        }
 
-      // Attempt to get a response using model fallback and retry loops
-      for (const modelName of modelsToTry) {
-        let attempts = 0;
-        const maxAttempts = 3;
+        // 2. Append the incoming message 
+        session.history.push({ role: 'user', parts: [{ text: messageText }] });
 
-        while (attempts < maxAttempts) {
+        let aiReply = "";
+        const modelsToTry = ['gemini-2.5-flash', 'gemini-2.5-flash-lite', 'gemini-1.5-flash'];
+
+        for (const modelName of modelsToTry) {
           try {
-            process.stdout.write(`[AI TRY] Attempting generation with ${modelName} (Try ${attempts + 1})...\n`);
-            
+            // 3. Feed the database history straight to Gemini
             const response = await ai.models.generateContent({
               model: modelName,
-              contents: messageText,
+              contents: session.history, 
               config: {
-                systemInstruction: "You are a helpful, concise AI assistant communicating over WhatsApp. Keep responses brief and conversational.",
+                systemInstruction: "You are a helpful, concise AI assistant communicating over WhatsApp.",
               }
             });
 
             if (response.text) {
               aiReply = response.text;
-              break; // Success! Break out of the retry loop
+              break;
             }
           } catch (err) {
-            attempts++;
-            process.stderr.write(`[WARN] ${modelName} failed with: ${err.message}. \n`);
-            
-            if (attempts < maxAttempts) {
-              // Wait 2 seconds before retrying this specific model
-              await new Promise(resolve => setTimeout(resolve, 2000)); 
-            }
+            process.stderr.write(`[WARN] Model execution failure: ${err.message}\n`);
           }
         }
 
-        if (aiReply) break; // If a model succeeded, don't try the backup models
-      }
+        if (!aiReply) {
+          aiReply = "🤖 Server load balancing issue. Try again shortly!";
+        } else {
+          // 4. Save the bot response and update records
+          session.history.push({ role: 'model', parts: [{ text: aiReply }] });
+          
+          // Cap logs at last 14 turns to stay within optimal prompt limits
+          if (session.history.length > 14) {
+            session.history = session.history.slice(-14);
+          }
+          
+          session.updatedAt = Date.now();
+          await session.save();
+        }
 
-      // If all models failed completely after all retries
-      if (!aiReply) {
-        aiReply = "🤖 Sorry, my brain is a bit overloaded with requests right now! Please try messaging me again in a minute.";
-      }
-
-      try {
-        // Send whatever response we secured back to WhatsApp
         await sendWhatsAppMessage(from, aiReply);
-        process.stdout.write(`[OUTGOING] Sent reply to ${from}\n`);
-      } catch (deliveryErr) {
-        process.stderr.write(`[ERROR] WhatsApp delivery failed: ${deliveryErr.message}\n`);
+
+      } catch (dbErr) {
+        process.stderr.write(`[CRITICAL ERROR]: ${dbErr.message}\n`);
       }
     }
   }
